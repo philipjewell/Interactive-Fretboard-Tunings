@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Interactive Fretboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --wood:#deb887;
+      --fret:#555;
+      --label-bg:#333;
+      --label-fg:#fff;
+      --btn:#4CAF50;
+      --btn-danger:#c0392b;
+      --btn-neutral:#3a7bd5;
+    }
+    body{ font-family:Arial,Helvetica,sans-serif; background:#f4f4f4; margin:20px; }
+    h1{ margin-bottom:10px; }
+    .controls{ display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; margin-bottom:14px; }
+    .controls label{ font-weight:600; }
+    select,button,input[type="checkbox"]{ padding:6px 8px; font-size:14px; }
+    .toggle{ display:inline-flex; align-items:center; gap:8px; background:#fff; border:1px solid #ccc; border-radius:6px; padding:6px 10px; }
+    .legend{ margin-left:auto; font-size:12px; opacity:.8 }
+    .board-wrap{ overflow:auto; }
+    table.fretboard{ border-collapse:collapse; margin:0 auto; background:var(--wood); box-shadow:0 0 10px rgba(0,0,0,.3); min-width:840px; }
+    .fretboard th,.fretboard td{ border:1px solid var(--fret); width:60px; height:44px; text-align:center; vertical-align:middle; position:relative; }
+    .fretboard th{ background:#eee; font-weight:700; }
+    .string-label{ background:var(--label-bg); color:var(--label-fg); width:120px; min-width:120px; white-space:nowrap; }
+    .string-controls{ display:flex; align-items:center; gap:6px; justify-content:center; }
+    .string-controls select{ min-width:68px; }
+    .btn,.btn-danger,.btn-neutral{ border:none; cursor:pointer; color:#fff; border-radius:6px; padding:6px 8px; font-weight:700; }
+    .btn{ background:var(--btn); }
+    .btn-neutral{ background:var(--btn-neutral); }
+    .btn-danger{ background:var(--btn-danger); }
+    .note{ display:inline-block; background:#fff; border:1px solid #000; border-radius:50px; padding:4px 8px; font-size:14px; line-height:1; user-select:none; }
+    .marker{ position:absolute; bottom:4px; left:50%; transform:translateX(-50%); width:8px; height:8px; border-radius:50%; background:rgba(0,0,0,.45); }
+    .double-marker{ display:flex; justify-content:center; gap:12px; }
+    .double-marker .marker{ position:static; }
+    .colorized .note[data-canon="C"]  { background:#ffe5e5; }
+    .colorized .note[data-canon="C#"] { background:#e9ddff; }
+    .colorized .note[data-canon="D"]  { background:#fff5cc; }
+    .colorized .note[data-canon="D#"] { background:#d9ecff; }
+    .colorized .note[data-canon="E"]  { background:#e6ffed; }
+    .colorized .note[data-canon="F"]  { background:#ffe9d6; }
+    .colorized .note[data-canon="F#"] { background:#e0d6ff; }
+    .colorized .note[data-canon="G"]  { background:#e0f4ff; }
+    .colorized .note[data-canon="G#"] { background:#ffe6f1; }
+    .colorized .note[data-canon="A"]  { background:#f3ffe0; }
+    .colorized .note[data-canon="A#"] { background:#e0fff3; }
+    .colorized .note[data-canon="B"]  { background:#fdeacc; }
+  </style>
+</head>
+<body>
+  <h1>Interactive Fretboard</h1>
+
+  <div class="controls">
+    <label for="preset">Preset Tuning:</label>
+    <select id="preset">
+      <option value="EADGBE">Standard (E A D G B E)</option>
+      <option value="DADGBE">Drop D (D A D G B E)</option>
+      <option value="DADGAD">DADGAD</option>
+      <option value="CGCFAD">Drop C (C G C F A D)</option>
+      <option value="BEADGBE">7-String Std (B E A D G B E)</option>
+      <option value="EADG">4-String Bass (E A D G)</option>
+      <option value="__custom">Custom (from URL / edits)</option>
+    </select>
+
+    <label class="toggle"><input type="checkbox" id="lefty"> Left-Handed</label>
+    <label class="toggle"><input type="checkbox" id="colorize"> Color Notes</label>
+    <button class="btn" id="shareBtn">Share</button>
+
+    <div class="legend">Tip: Use <code>?strings=dadgbe</code> or flats like <code>?strings=ebg#d</code></div>
+  </div>
+
+  <div class="board-wrap">
+    <table id="fretboard" class="fretboard"></table>
+  </div>
+
+  <script>
+    const NOTES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    const ALT={ "C#":"Db","D#":"Eb","F#":"Gb","G#":"Ab","A#":"Bb" };
+    const FLAT2SHARP={ "Db":"C#","Eb":"D#","Gb":"F#","Ab":"G#","Bb":"A#" };
+    const TUNINGS={
+      "EADGBE":["E","A","D","G","B","E"],
+      "DADGBE":["D","A","D","G","B","E"],
+      "DADGAD":["D","A","D","G","A","D"],
+      "CGCFAD":["C","G","C","F","A","D"],
+      "BEADGBE":["B","E","A","D","G","B","E"],
+      "EADG":["E","A","D","G"]
+    };
+    let currentStrings=[...TUNINGS["EADGBE"]];
+    let leftHanded=false;
+    let colorEnabled=false;
+
+    const noteAt=(start,steps)=>NOTES[(NOTES.indexOf(start)+steps)%12];
+    const formatNote=(sharp)=>ALT[sharp]?`${sharp}/${ALT[sharp]}`:sharp;
+    const toSharp=(n)=>FLAT2SHARP[n]||n;
+
+    function parseQueryTuning(){
+      const s=new URLSearchParams(location.search).get("strings");
+      if(!s) return null;
+      const parsed=[];
+      for(let i=0;i<s.length;i++){
+        let c=s[i];
+        if(!/[A-Ga-g]/.test(c)) continue;
+        let letter=c.toUpperCase();
+        let acc="";
+        let next=s[i+1]||"";
+        if(next==="#"||next==="♯"){acc="#";i++;}
+        else if(next.toLowerCase()==="b"||next==="♭"){acc="b";i++;}
+        parsed.push(toSharp(letter+acc));
+      }
+      return parsed.length?parsed:null;
+    }
+
+    function makeNoteDropdown(selected,realIndex){
+      const sel=document.createElement("select");
+      NOTES.forEach(n=>{
+        const o=document.createElement("option");
+        o.value=n;o.textContent=n;
+        if(n===selected)o.selected=true;
+        sel.appendChild(o);
+      });
+      sel.addEventListener("change",e=>{
+        currentStrings[realIndex]=e.target.value;
+        document.getElementById("preset").value="__custom";
+        render();
+      });
+      return sel;
+    }
+    function makeRemoveButton(realIndex){
+      const b=document.createElement("button");
+      b.className="btn-danger"; b.textContent="–";
+      b.addEventListener("click",()=>{
+        if(currentStrings.length>1){
+          currentStrings.splice(realIndex,1);
+          document.getElementById("preset").value="__custom";
+          render();
+        }
+      });
+      return b;
+    }
+
+    function render(){
+      const table=document.getElementById("fretboard");
+      table.classList.toggle("colorized",colorEnabled);
+      table.innerHTML="";
+      const frets=leftHanded?Array.from({length:13},(_,i)=>12-i):Array.from({length:13},(_,i)=>i);
+      const trh=document.createElement("tr");
+      trh.appendChild(document.createElement("th"));
+      frets.forEach(f=>{let th=document.createElement("th");th.textContent=f;trh.appendChild(th);});
+      table.appendChild(trh);
+      const addTop=document.createElement("tr");
+      const addTopTd=document.createElement("td"); addTopTd.colSpan=frets.length+1;
+      const btnTop=document.createElement("button"); btnTop.className="btn-neutral"; btnTop.textContent="+ Add String (Top)";
+      btnTop.onclick=()=>{currentStrings.push("E");document.getElementById("preset").value="__custom";render();};
+      addTopTd.appendChild(btnTop); addTop.appendChild(addTopTd); table.appendChild(addTop);
+      currentStrings.slice().reverse().forEach((openNote,revIndex)=>{
+        const realIndex=currentStrings.length-1-revIndex;
+        const tr=document.createElement("tr");
+        const label=document.createElement("td"); label.className="string-label";
+        const wrap=document.createElement("div"); wrap.className="string-controls";
+        wrap.appendChild(makeRemoveButton(realIndex)); wrap.appendChild(makeNoteDropdown(openNote,realIndex));
+        label.appendChild(wrap); tr.appendChild(label);
+        frets.forEach(f=>{
+          const td=document.createElement("td");
+          const sharp=noteAt(openNote,f);
+          const span=document.createElement("span"); span.className="note"; span.dataset.canon=sharp; span.textContent=formatNote(sharp);
+          td.appendChild(span);
+          if([3,5,7,9].includes(f)){const d=document.createElement("div"); d.className="marker"; td.appendChild(d);}
+          if(f===12){const wrap=document.createElement("div");wrap.className="double-marker";wrap.innerHTML='<div class="marker"></div><div class="marker"></div>';td.appendChild(wrap);}
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+      const addBottom=document.createElement("tr");
+      const addBottomTd=document.createElement("td"); addBottomTd.colSpan=frets.length+1;
+      const btnBottom=document.createElement("button"); btnBottom.className="btn-neutral"; btnBottom.textContent="+ Add String (Bottom)";
+      btnBottom.onclick=()=>{currentStrings.unshift("E");document.getElementById("preset").value="__custom";render();};
+      addBottomTd.appendChild(btnBottom); addBottom.appendChild(addBottomTd); table.appendChild(addBottom);
+    }
+
+    // Share feature
+    function makeShareLink(){
+      // Strings are stored low→high; query expects that order
+      const s=currentStrings.map(n=>n.toLowerCase().replace("♯","#").replace("♭","b")).join("");
+      return `${location.origin}${location.pathname}?strings=${s}`;
+    }
+    function shareLink(){
+      const url=makeShareLink();
+      navigator.clipboard.writeText(url).then(()=>{
+        alert("Link copied to clipboard:\n"+url);
+      }).catch(()=>{
+        prompt("Copy this link:",url);
+      });
+    }
+
+    document.getElementById("preset").addEventListener("change",e=>{
+      const key=e.target.value;
+      if(key==="__custom")return;
+      currentStrings=[...TUNINGS[key]];
+      render();
+    });
+    document.getElementById("lefty").onchange=e=>{leftHanded=e.target.checked;render();};
+    document.getElementById("colorize").onchange=e=>{colorEnabled=e.target.checked;render();};
+    document.getElementById("shareBtn").onclick=shareLink;
+
+    (function init(){
+      const q=parseQueryTuning();
+      if(q){currentStrings=q;document.getElementById("preset").value="__custom";}
+      render();
+    })();
+  </script>
+</body>
+</html>
+
